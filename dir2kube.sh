@@ -1,7 +1,5 @@
 #!/bin/bash
 
-
-
 #Arguments
 #
 # $1 -> baseDir
@@ -10,23 +8,34 @@
 # $4 -> kubeConfigPath
 # $5 -> yamlFiles
 
+#Secret naming convention
+#Details: must be a DNS subdomain (at most 253 characters, matching regex [a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)
+#We replace forward slashes with hyphens inoprder to comply
 
-baseDir=$1
-targetDir=$2
-mountDir=$3
+baseDir=${1%/}
+targetDir=${2%/}
+mountDir=${3%/}
 kubeConfigPath=$4
 #Remainder of params
 yamlFiles=${@:5}
 
-currentSecretYaml=
 previousDir=
-#Gotta distinguish between new or additional files to know if we patch or not
-for currentFile in $(find $baseDir/$targetDir); do
+for currentFile in $(find $baseDir/$targetDir -type f | sort); do
+    echo "curr $currentFile"
     #Remove chars following end slash inclusive
     currentDir=${currentFile%/*}
     #Delete everything up to end slash inclusive
     filenameOnly=${currentFile##*/}
-    secretName=$(echo $currentDir | tr '/.' '-')
+    trailingDir=${currentDir#$baseDir/$targetDir}
+    #Remove potential preceeding slash
+    trailingDir=${trailingDir#/}
+    volumeMount=$mountDir
+    if [[ $trailingDir != ""  ]]; then
+        volumeMount=${mountDir}/${trailingDir}
+    fi
+
+    #Secret name is defined by its path under the base dir
+    secretName=$(echo ${currentDir#$baseDir/} | tr '/' '-')
 
     if [[ $currentDir == $previousDir ]]; then
        #Patch since we are adding a file to the existing dir 
@@ -38,13 +47,12 @@ for currentFile in $(find $baseDir/$targetDir); do
         echo "conf2Kube -f $currentFile -n $secretName -k $filenameOnly | kubectl --kubeconfig $kubeConfigPath -f -"
         volumeName="        - name: $secretName"
             secret="          secret:"
-        secretName="              secretName: $secretName"
-        volumeMount=${mountDir}/${currentDir##$baseDir/$targetDir}
-        mountPath="        - mountPath: $voluemMount"
+        secretNameYaml="              secretName: $secretName"
+        mountPath="        - mountPath: $volumeMount"
         mountName="          name: $secretName"
         for yamlFile in $yamlFiles; do
-            perl -pe  "s|(^.*volumes:.*$)|\1\n${volumeName}\n${hostPath}\n${secretName}|" $yamlFile
-            perl -pe  "s|(^.*volumeMounts:.*$)|\1\n${mountPath}\n${mountName}|" $yamlFile
+            perl -p -i -e  "s|(^.*volumes:.*$)|\1\n${volumeName}\n${secret}\n${secretNameYaml}|" $yamlFile
+            perl -p -i -e  "s|(^.*volumeMounts:.*$)|\1\n${mountPath}\n${mountName}|" $yamlFile
         done
     fi
     previousDir=$currentDir
